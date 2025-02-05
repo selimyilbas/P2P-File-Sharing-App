@@ -14,9 +14,3 @@ Graphical User Interface: Easy-to-use interface for configuring shared and desti
 File Exclusion: Customize file sharing by excluding specific files or file patterns (e.g., system files like .DS_Store).
 Progress Tracking: Real-time progress bars for active downloads.
 
-
-Network Issues:
-If peers are not discovered, verify your network configuration and firewall settings. Using bridged networking in your VM settings is recommended.
-
-File Exclusions:
-If unwanted files (e.g., .DS_Store) appear, add them to the exclusion list using the provided GUI options.
