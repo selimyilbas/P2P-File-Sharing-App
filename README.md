@@ -12,5 +12,5 @@ Features
 Peer Discovery: Automatically detects and connects to other peers on the same local network using multicast.
 Graphical User Interface: Easy-to-use interface for configuring shared and destination folders, searching for files, and monitoring downloads.
 File Exclusion: Customize file sharing by excluding specific files or file patterns (e.g., system files like .DS_Store).
-Progress Tracking: Real-time progress bars for active downloads..
+Progress Tracking: Real-time progress bars for active downloads...
 
