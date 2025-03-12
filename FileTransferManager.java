@@ -1,6 +1,7 @@
 package p2p;
 
 import java.io.File;
+import java.util.List;
 
 public class FileTransferManager {
     private final File sharedFolder;
@@ -20,8 +21,16 @@ public class FileTransferManager {
         return sharedFolder;
     }
 
-    public void downloadFile(String peerIP, int peerPort, String fileName) {
-        new FileClient(peerIP, peerPort, fileName, destinationFolder, gui).start();
+    public void downloadFile(List<String> peersWithFile, String fileName) {
+        if (peersWithFile == null || peersWithFile.isEmpty()) {
+            if (gui != null) {
+                gui.logMessage("No available peers for file: " + fileName);
+                gui.updateDownloadProgress(fileName, "File Not Found");
+            }
+            return;
+        }
+        FileClient fc = new FileClient(peersWithFile, fileName, destinationFolder, gui);
+        fc.start();
     }
 
     public void updateDownloadProgress(String fileName, String progress) {
@@ -31,6 +40,6 @@ public class FileTransferManager {
     }
 
     public void addReceivedFile(String fileName) {
-        // If you need to track completed files, you can do it here
+        // if you need to track completed files, do so here
     }
 }

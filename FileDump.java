@@ -8,30 +8,26 @@ import java.util.Random;
 
 /**
  * FileDump
- * - Simple utility to generate a large file (e.g., 10 million random digits).
- *   Used for testing chunk-based file transfers.
+ *  Creates fileToSend.txt with 10 million random digits (~21MB).
  */
 public class FileDump {
-
     public static void main(String[] args) {
         File file = new File("fileToSend.txt");
         try (BufferedWriter myFile = new BufferedWriter(new FileWriter(file))) {
             Random r = new Random();
-            int length = 10_000_000; // 10 million digits
+            int length = 10_000_000;
             System.out.println("Generating file with 10 million random digits...");
 
-            // Write in batches to avoid memory overhead
             StringBuilder sb = new StringBuilder();
             int batchSize = 100_000;
             for (int i = 0; i < length; i++) {
-                sb.append(r.nextInt(10)); // digit from 0-9
+                sb.append(r.nextInt(10)); 
                 if ((i + 1) % batchSize == 0) {
                     myFile.write(sb.toString());
                     sb.setLength(0);
                     System.out.println((i + 1) + " digits written...");
                 }
             }
-            // final flush
             if (sb.length() > 0) {
                 myFile.write(sb.toString());
                 System.out.println("Final batch of digits written.");

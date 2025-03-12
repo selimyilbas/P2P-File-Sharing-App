@@ -9,15 +9,19 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
 import java.net.Socket;
 import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.Set;
 
 /**
  * P2PFileSharingGUI:
- * - Main graphical interface for the P2P system.
- * - Connect/Disconnect to the network, search for remote files, and download them.
+ * - Main graphical interface for the P2P system
+ * - Fixed to work across Mac, Linux, and Windows
+ * - Improved search functionality to prevent UI freezing
  */
 public class P2PFileSharingGUI extends JFrame {
     // Menus
@@ -42,7 +46,7 @@ public class P2PFileSharingGUI extends JFrame {
 
     // Found files list + actions
     private JList<String> foundFilesList;
-    private JButton searchButton, downloadButton;
+    private JButton searchButton, downloadButton, debugButton;
 
     // Networking references
     private DiscoveryService discoveryService;
@@ -54,11 +58,18 @@ public class P2PFileSharingGUI extends JFrame {
 
     // Manages file downloads
     private FileTransferManager fileTransferManager;
+    
+    // Search manager for non-blocking search
+    private SearchManager searchManager;
 
     public P2PFileSharingGUI() {
         setTitle("P2P File Sharing Application");
         setSize(900, 800);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        
+        // Initialize search manager
+        searchManager = new SearchManager(this);
+
         initializeComponents();
         layoutComponents();
         addEventHandlers();
@@ -100,6 +111,7 @@ public class P2PFileSharingGUI extends JFrame {
         foundFilesList = new JList<>(new DefaultListModel<>());
         searchButton = new JButton("Search");
         downloadButton = new JButton("Download Selected File");
+        debugButton = new JButton("Debug Network");
     }
 
     private void layoutComponents() {
@@ -216,9 +228,16 @@ public class P2PFileSharingGUI extends JFrame {
         foundPanel.setBorder(BorderFactory.createTitledBorder("Found Files"));
         foundPanel.add(new JScrollPane(foundFilesList), BorderLayout.CENTER);
 
-        JPanel searchDownloadPanel = new JPanel(new BorderLayout());
-        searchDownloadPanel.add(searchButton, BorderLayout.NORTH);
-        searchDownloadPanel.add(downloadButton, BorderLayout.SOUTH);
+        JPanel searchDownloadPanel = new JPanel(new GridLayout(4, 1, 5, 5));
+        searchDownloadPanel.add(searchButton);
+        searchDownloadPanel.add(downloadButton);
+        searchDownloadPanel.add(debugButton);
+        
+        // Add the manual peer button
+        JButton addPeerButton = new JButton("Add Peer");
+        addPeerButton.addActionListener(e -> addManualPeer());
+        searchDownloadPanel.add(addPeerButton);
+        
         foundPanel.add(searchDownloadPanel, BorderLayout.EAST);
 
         mainPanel.add(foundPanel, gbc);
@@ -238,10 +257,22 @@ public class P2PFileSharingGUI extends JFrame {
         setSharedFolderButton.addActionListener(e -> chooseFolder("Select Shared Folder", true));
         setDestinationFolderButton.addActionListener(e -> chooseFolder("Select Destination Folder", false));
 
-        // Searching
-        searchButton.addActionListener(e -> performSearch());
+        // Searching for remote files
+        searchButton.addActionListener(e -> {
+            if (searchManager.isSearchInProgress()) {
+                searchManager.cancelSearch();
+                searchButton.setText("Search");
+            } else {
+                searchButton.setText("Cancel Search");
+                searchManager.performSearch();
+            }
+        });
+        
         // Download
         downloadButton.addActionListener(e -> initiateDownload());
+        
+        // Debug button
+        debugButton.addActionListener(e -> debugPeers());
 
         // Exclusions
         addFolderExclusionButton.addActionListener(e -> addFolderExclusion());
@@ -306,6 +337,7 @@ public class P2PFileSharingGUI extends JFrame {
             }
         }
     }
+
     private void deleteFolderExclusion() {
         int selectedIndex = folderExclusionList.getSelectedIndex();
         if (selectedIndex != -1) {
@@ -334,6 +366,7 @@ public class P2PFileSharingGUI extends JFrame {
             }
         }
     }
+
     private void deleteFileMask() {
         int selectedIndex = fileMaskList.getSelectedIndex();
         if (selectedIndex != -1) {
@@ -345,6 +378,9 @@ public class P2PFileSharingGUI extends JFrame {
         }
     }
 
+    /**
+     * Connect to the P2P network with improved cross-platform support
+     */
     private void connectToNetwork() {
         if (sharedFolder == null || destinationFolder == null) {
             JOptionPane.showMessageDialog(this,
@@ -365,43 +401,83 @@ public class P2PFileSharingGUI extends JFrame {
             return;
         }
 
+        // Configure network properties for cross-platform support
+        NetworkUtils.configureNetworkProperties();
+
+        // Initialize file manager
         fileTransferManager = new FileTransferManager(sharedFolder, destinationFolder);
         fileTransferManager.setGUI(this);
 
+        // Start server
         serverThread = new ServerSocketThread(fileTransferManager, this);
         serverThread.start();
         logMessage("Server started, listening for connections...");
 
+        // Wait asynchronously for the port to be assigned
         new Thread(() -> {
-            while (serverThread.getAssignedPort() == 0) {
+            try {
+                // Wait for server to start, with timeout
+                int waitCount = 0;
+                while (serverThread.getAssignedPort() == 0 && waitCount < 50) {
+                    try {
+                        Thread.sleep(100);
+                        waitCount++;
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+
+                final int assignedPort = serverThread.getAssignedPort();
+                if (assignedPort == 0) {
+                    SwingUtilities.invokeLater(() -> {
+                        JOptionPane.showMessageDialog(this,
+                            "Failed to assign a port for the server.",
+                            "Error", JOptionPane.ERROR_MESSAGE);
+                    });
+                    return;
+                }
+
+                // Now create and start the DiscoveryService
+                discoveryService = new DiscoveryService(this);
+                discoveryService.start();
+
+                // Send discovery request after a short delay to ensure the service is running
                 try {
-                    Thread.sleep(100);
+                    Thread.sleep(1000);  // 1 second delay
+                    discoveryService.sendDiscoveryRequest(assignedPort);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
-            }
-            int assignedPort = serverThread.getAssignedPort();
-            if (assignedPort == 0) {
-                JOptionPane.showMessageDialog(this,
-                    "Failed to assign a port for the server.",
-                    "Error", JOptionPane.ERROR_MESSAGE);
-                return;
-            }
-            discoveryService = new DiscoveryService(assignedPort, this);
-            discoveryService.start();
-            logMessage("Discovery Service started on multicast address "
-                       + DiscoveryService.MULTICAST_ADDRESS + ":" + DiscoveryService.DISCOVERY_PORT);
 
-            SwingUtilities.invokeLater(() -> {
-                serverPortLabel.setText("Assigned Port: " + assignedPort);
-                JOptionPane.showMessageDialog(this,
-                    "Connected on port " + assignedPort + "!",
-                    "Info", JOptionPane.INFORMATION_MESSAGE);
-            });
+                SwingUtilities.invokeLater(() -> {
+                    serverPortLabel.setText("Assigned Port: " + assignedPort);
+                    connectItem.setEnabled(false);
+                    disconnectItem.setEnabled(true);
+                    JOptionPane.showMessageDialog(this,
+                        "Connected on port " + assignedPort + "!\nDiscovery Request sent.",
+                        "Info", JOptionPane.INFORMATION_MESSAGE);
+                });
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> {
+                    logMessage("Error during connection: " + e.getMessage());
+                    JOptionPane.showMessageDialog(this,
+                        "Error connecting to network: " + e.getMessage(),
+                        "Error", JOptionPane.ERROR_MESSAGE);
+                });
+            }
         }).start();
     }
 
-    private void disconnectFromNetwork() {
+    /**
+     * Disconnect from the P2P network
+     */
+    public void disconnectFromNetwork() {
+        if (searchManager.isSearchInProgress()) {
+            searchManager.cancelSearch();
+            searchButton.setText("Search");
+        }
+
         if (discoveryService != null) {
             discoveryService.shutdown();
             discoveryService = null;
@@ -412,85 +488,212 @@ public class P2PFileSharingGUI extends JFrame {
             serverThread = null;
             logMessage("Server stopped.");
         }
+        
+        connectItem.setEnabled(true);
+        disconnectItem.setEnabled(false);
         serverPortLabel.setText("Assigned Port: Not Connected");
+        
         JOptionPane.showMessageDialog(this,
             "Disconnected from the network.",
             "Info", JOptionPane.INFORMATION_MESSAGE);
     }
 
+    /**
+     * Debug peer connections and network settings
+     */
+    private void debugPeers() {
+        JTextArea textArea = new JTextArea(20, 50);
+        textArea.setEditable(false);
+        JScrollPane scrollPane = new JScrollPane(textArea);
+        
+        // Gather debug information
+        StringBuilder debug = new StringBuilder();
+        debug.append("=== P2P Network Debug Info ===\n\n");
+        
+        // System info
+        debug.append("OS: ").append(System.getProperty("os.name"))
+             .append(" ").append(System.getProperty("os.version")).append("\n");
+        debug.append("Java: ").append(System.getProperty("java.version")).append("\n\n");
+        
+        // Network interfaces
+        debug.append("=== Network Interfaces ===\n");
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface iface = interfaces.nextElement();
+                debug.append("Interface: ").append(iface.getDisplayName()).append("\n");
+                debug.append("  Up: ").append(iface.isUp())
+                     .append(", Loopback: ").append(iface.isLoopback())
+                     .append(", Virtual: ").append(iface.isVirtual()).append("\n");
+                
+                Enumeration<InetAddress> addresses = iface.getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    InetAddress addr = addresses.nextElement();
+                    debug.append("  Address: ").append(addr.getHostAddress()).append("\n");
+                }
+                debug.append("\n");
+            }
+        } catch (Exception e) {
+            debug.append("Error getting network interfaces: ").append(e.getMessage()).append("\n");
+        }
+        
+        // Best local address
+        debug.append("Best local address: ");
+        try {
+            InetAddress bestAddr = NetworkUtils.getBestLocalAddress();
+            debug.append(bestAddr != null ? bestAddr.getHostAddress() : "none found").append("\n\n");
+        } catch (Exception e) {
+            debug.append("Error: ").append(e.getMessage()).append("\n\n");
+        }
+        
+        // Server info
+        debug.append("Server port: ").append(getServerPort()).append("\n\n");
+        
+        // Discovery service peers
+        debug.append("=== Known Peers ===\n");
+        if (discoveryService != null) {
+            Set<String> peers = discoveryService.getPeerAddresses();
+            if (peers != null && !peers.isEmpty()) {
+                for (String peer : peers) {
+                    debug.append(peer).append("\n");
+                }
+            } else {
+                debug.append("No peers discovered\n");
+            }
+        } else {
+            debug.append("Discovery service not running\n");
+        }
+        
+        // Display in dialog
+        textArea.setText(debug.toString());
+        JOptionPane.showMessageDialog(this, scrollPane, "P2P Network Debug", JOptionPane.INFORMATION_MESSAGE);
+        
+        // Also log to main window
+        logMessage("--- Debug Info ---");
+        logMessage("Server port: " + getServerPort());
+        logMessage("Best local address: " + 
+            (NetworkUtils.getBestLocalAddress() != null ? 
+             NetworkUtils.getBestLocalAddress().getHostAddress() : "none found"));
+        
+        if (discoveryService != null) {
+            Set<String> peers = discoveryService.getPeerAddresses();
+            logMessage("Known peers: " + (peers != null ? peers.size() : 0));
+            if (peers != null) {
+                for (String peer : peers) {
+                    logMessage("Peer: " + peer);
+                }
+            }
+            
+            // Force a new discovery request
+            logMessage("Sending new discovery request...");
+            discoveryService.sendDiscoveryRequest(getServerPort());
+        }
+    }
+
+    /**
+     * Add a peer manually
+     */
+    private void addManualPeer() {
+        String peerAddress = JOptionPane.showInputDialog(this, 
+            "Enter peer IP:port\nYour address is: " + 
+            (discoveryService != null ? discoveryService.getLocalInfo() : "not connected"));
+        
+        if (peerAddress != null && !peerAddress.trim().isEmpty()) {
+            if (discoveryService != null) {
+                // Manually register this peer
+                String[] parts = peerAddress.trim().split(":");
+                if (parts.length == 2) {
+                    try {
+                        String ip = parts[0];
+                        int port = Integer.parseInt(parts[1]);
+                        discoveryService.manuallyAddPeer(ip, port);
+                        JOptionPane.showMessageDialog(this,
+                            "Peer added successfully.\nClick Search to find files.",
+                            "Success", JOptionPane.INFORMATION_MESSAGE);
+                    } catch (NumberFormatException e) {
+                        JOptionPane.showMessageDialog(this, 
+                            "Invalid port number", "Error", JOptionPane.ERROR_MESSAGE);
+                    }
+                } else {
+                    JOptionPane.showMessageDialog(this, 
+                        "Invalid format. Use IP:Port", "Error", JOptionPane.ERROR_MESSAGE);
+                }
+            } else {
+                JOptionPane.showMessageDialog(this, 
+                    "Not connected. Connect first.", "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
+    /**
+     * Log a message in the downloads table
+     */
     public void logMessage(String message) {
-        downloadingFilesModel.addRow(new Object[]{message, "In Progress"});
+        SwingUtilities.invokeLater(() -> {
+            downloadingFilesModel.addRow(new Object[]{message, "Info"});
+            // Auto-scroll to bottom
+            downloadingFilesTable.scrollRectToVisible(
+                downloadingFilesTable.getCellRect(
+                    downloadingFilesModel.getRowCount() - 1, 0, true));
+        });
     }
 
+    /**
+     * Update download progress in the table
+     */
     public void updateDownloadProgress(String fileName, String progress) {
-        for (int i = 0; i < downloadingFilesModel.getRowCount(); i++) {
-            if (downloadingFilesModel.getValueAt(i, 0).equals(fileName)) {
-                downloadingFilesModel.setValueAt(progress, i, 1);
-                return;
+        SwingUtilities.invokeLater(() -> {
+            for (int i = 0; i < downloadingFilesModel.getRowCount(); i++) {
+                if (downloadingFilesModel.getValueAt(i, 0).equals(fileName)) {
+                    downloadingFilesModel.setValueAt(progress, i, 1);
+                    return;
+                }
             }
+            
+            // If not found, add a new row
+            downloadingFilesModel.addRow(new Object[]{fileName, progress});
+        });
+    }
+    
+    /**
+     * Update the search button text based on search state
+     */
+    public void updateSearchButtonState(boolean isSearching) {
+        SwingUtilities.invokeLater(() -> {
+            searchButton.setText(isSearching ? "Cancel Search" : "Search");
+        });
+    }
+    
+    /**
+     * Get the DiscoveryService instance
+     */
+    public DiscoveryService getDiscoveryService() {
+        return discoveryService;
+    }
+    
+    /**
+     * Clear the found files list
+     */
+    public void clearFoundFilesList() {
+        DefaultListModel<String> model = (DefaultListModel<String>) foundFilesList.getModel();
+        model.clear();
+    }
+    
+    /**
+     * Update the found files list with the given files
+     */
+    public void updateFoundFilesList(List<String> files) {
+        DefaultListModel<String> model = (DefaultListModel<String>) foundFilesList.getModel();
+        model.clear();
+        for (String file : files) {
+            model.addElement(file);
         }
     }
 
-    private void performSearch() {
-        if (discoveryService == null) {
-            JOptionPane.showMessageDialog(this,
-                "Not connected to the network. Please Connect first.",
-                "Error", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-
-        Set<String> peers = discoveryService.getPeerAddresses();
-        if (peers == null || peers.isEmpty()) {
-            JOptionPane.showMessageDialog(this,
-                "No peers discovered yet.",
-                "Info", JOptionPane.INFORMATION_MESSAGE);
-            return;
-        }
-
-        List<String> remoteFiles = new ArrayList<>();
-        for (String peerAddr : peers) {
-            String[] parts = peerAddr.split(":");
-            if (parts.length != 2) continue;
-            String peerIP = parts[0];
-            int peerPort;
-            try {
-                peerPort = Integer.parseInt(parts[1]);
-            } catch (NumberFormatException e) {
-                continue;
-            }
-            remoteFiles.addAll(requestFileListFromPeer(peerIP, peerPort));
-        }
-
-        foundFilesList.setListData(remoteFiles.toArray(new String[0]));
-    }
-
-    private List<String> requestFileListFromPeer(String peerIP, int peerPort) {
-        List<String> result = new ArrayList<>();
-        try (Socket socket = new Socket(peerIP, peerPort);
-             DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
-             DataInputStream dis = new DataInputStream(socket.getInputStream())) {
-
-            dos.writeUTF("REQUEST_FILE_LIST");
-            dos.flush();
-
-            String marker = dis.readUTF();
-            if (!"FILE_LIST".equals(marker)) {
-                return result;
-            }
-            int fileCount = dis.readInt();
-            for (int i = 0; i < fileCount; i++) {
-                String fileName = dis.readUTF();
-                // "fileName:peerIP:peerPort"
-                result.add(fileName + ":" + peerIP + ":" + peerPort);
-            }
-
-        } catch (IOException e) {
-            logMessage("Failed to fetch file list from "
-                       + peerIP + ":" + peerPort + " -> " + e.getMessage());
-        }
-        return result;
-    }
-
+    /**
+     * Download the selected file from the peer(s).
+     * If multiple peers have the same file (the same "fileName"), we do multi-source.
+     */
     private void initiateDownload() {
         String selectedEntry = foundFilesList.getSelectedValue();
         if (selectedEntry == null) {
@@ -500,6 +703,7 @@ public class P2PFileSharingGUI extends JFrame {
             return;
         }
 
+        // Example: "fileX:192.168.1.10:5050"
         int lastColon = selectedEntry.lastIndexOf(':');
         if (lastColon == -1) {
             JOptionPane.showMessageDialog(this,
@@ -531,17 +735,60 @@ public class P2PFileSharingGUI extends JFrame {
             return;
         }
 
-        fileTransferManager.downloadFile(peerIP, peerPort, fileName);
+        // Collect all peers that have the same fileName
+        ListModel<String> model = foundFilesList.getModel();
+        List<String> peersWithFile = new ArrayList<>();
+        for (int i = 0; i < model.getSize(); i++) {
+            String entry = model.getElementAt(i);
+            int lc = entry.lastIndexOf(':');
+            if (lc == -1) continue;
+            String fNameAndIP = entry.substring(0, lc);
+            String pStr = entry.substring(lc + 1);
+
+            int sc = fNameAndIP.lastIndexOf(':');
+            if (sc == -1) continue;
+            String fName = fNameAndIP.substring(0, sc);
+            String ip = fNameAndIP.substring(sc + 1);
+
+            if (fName.equals(fileName)) {
+                peersWithFile.add(ip + ":" + pStr);
+            }
+        }
+
+        // Add a new row in the table for progress
         downloadingFilesModel.addRow(new Object[]{fileName, "0%"});
+
+        // Multi-source chunk download
+        fileTransferManager.downloadFile(peersWithFile, fileName);
+    }
+
+    /**
+     * Get the server port from ServerSocketThread
+     */
+    public int getServerPort() {
+        if (serverThread != null) {
+            return serverThread.getAssignedPort();
+        }
+        return 0;
     }
 
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
+            try {
+                // Set look and feel to match the OS
+                UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            
             P2PFileSharingGUI gui = new P2PFileSharingGUI();
             gui.setVisible(true);
         });
     }
 
+    /**
+     * Custom table cell renderer for the "Progress" column
+     */
     class ProgressBarRenderer extends JProgressBar implements TableCellRenderer {
         public ProgressBarRenderer() {
             super(0, 100);
@@ -553,31 +800,32 @@ public class P2PFileSharingGUI extends JFrame {
                                                        boolean isSelected, boolean hasFocus,
                                                        int row, int column) {
             if (value instanceof String) {
-                String strVal = (String) value;
-                if (strVal.endsWith("%")) {
-                    try {
-                        int progress = Integer.parseInt(strVal.replace("%", ""));
-                        setValue(progress);
-                        setString(strVal);
-                    } catch (NumberFormatException e) {
-                        setValue(0);
-                        setString("Error");
+               
+                        String strVal = (String) value;
+                        if (strVal.endsWith("%")) {
+                            try {
+                                int progress = Integer.parseInt(strVal.replace("%", ""));
+                                setValue(progress);
+                                setString(strVal);
+                            } catch (NumberFormatException e) {
+                                setValue(0);
+                                setString("Error");
+                            }
+                        } else if (strVal.equals("Completed")) {
+                            setValue(100);
+                            setString("Completed");
+                        } else if (strVal.equals("File Not Found")) {
+                            setValue(0);
+                            setString("File Not Found");
+                        } else if (strVal.equals("Error")) {
+                            setValue(0);
+                            setString("Error");
+                        } else {
+                            setValue(0);
+                            setString(strVal);
+                        }
                     }
-                } else if (strVal.equals("Completed")) {
-                    setValue(100);
-                    setString("Completed");
-                } else if (strVal.equals("File Not Found")) {
-                    setValue(0);
-                    setString("File Not Found");
-                } else if (strVal.equals("Error")) {
-                    setValue(0);
-                    setString("Error");
-                } else {
-                    setValue(0);
-                    setString(strVal);
+                    return this;
                 }
             }
-            return this;
         }
-    }
-}

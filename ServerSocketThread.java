@@ -23,8 +23,10 @@ public class ServerSocketThread extends Thread {
     @Override
     public void run() {
         try {
-            serverSocket = new ServerSocket(0);  // random available port
+            // ephemeral port: 0
+            serverSocket = new ServerSocket(0);
             assignedPort = serverSocket.getLocalPort();
+
             gui.logMessage("Server listening on port " + assignedPort + ".");
             gui.logMessage("Waiting for incoming connections...");
 
